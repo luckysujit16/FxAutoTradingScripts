@@ -1,0 +1,153 @@
+#property copyright "Copyright 2025, Sujit Jadhav."
+#property link      "https://www.sujitjadhav.me"
+#property version   "1.00"
+
+#include <trade/trade.mqh>
+
+// Inputs
+input ENUM_TIMEFRAMES Timeframe = PERIOD_M15;  // Timeframe for momentum
+input double TriggerFactor = 100;              // Momentum trigger level
+input double LotSize = 0.1;                    // Lot size
+input double TakeProfit = 50;                  // Initial take profit in points
+input double TrailingStep = 20;                // Trailing step in points
+
+int handleMomentum;
+int barsTotal;
+
+CTrade trade;
+
+// Structure to store virtual TP and SL
+struct TradeMemory
+{
+   double virtualTP;  // Virtual Take-Profit
+   double lastSL;     // Last Stop-Loss (for debugging)
+};
+TradeMemory tradeMemory;
+
+int OnInit()
+{
+   // Initialize momentum indicator
+   handleMomentum = iMomentum(NULL, Timeframe, 14, PRICE_CLOSE);
+   barsTotal = iBars(NULL, Timeframe);
+   Print("Momentum-based EA initialized.");
+   return INIT_SUCCEEDED;
+}
+
+void OnDeinit(const int reason)
+{
+   Print("EA de-initialized. Reason: ", reason);
+}
+
+void OnTick()
+{
+   int totalPositions = PositionsTotal();
+   if (totalPositions > 0)
+   {
+      // Modify open position if price crosses virtual TP
+      ManageOpenPositions();
+      return;
+   }
+
+   int bars = iBars(NULL, Timeframe);
+   if (barsTotal != bars)
+   {
+      //barsTotal = bars;  // Update bar count
+      
+      Print("OnTick First IF Condition is True, BarsTotal: ", barsTotal, " ... ", bars);
+      
+      double momentum[];
+      CopyBuffer(handleMomentum, 0, 1, 1, momentum);
+      double open = iOpen(NULL, Timeframe, 1);
+      double close = iClose(NULL, Timeframe, 1);
+      
+      Print("Open Price: ", open, " ... Close Price: ", close, " ... Momentum: ", momentum[0]);
+      
+      if (open > close)  // Last candle was red (potential sell signal)
+      {
+         if (momentum[0] > TriggerFactor)
+         {
+            Print("Sell Signal Triggered");
+            OpenTrade(ORDER_TYPE_SELL);
+         }
+      }
+      else if (close > open)  // Last candle was green (potential buy signal)
+      {
+         if (momentum[0] > TriggerFactor)
+         {
+            Print("Buy Signal Triggered");
+            OpenTrade(ORDER_TYPE_BUY);
+         }
+      }
+      
+      
+   }
+}
+
+// Function to open buy/sell trades
+void OpenTrade(int orderType)
+{
+   double entryPrice = (orderType == ORDER_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_ASK) : SymbolInfoDouble(_Symbol, SYMBOL_BID);
+   entryPrice = NormalizeDouble(entryPrice, _Digits);
+
+   double tp = (orderType == ORDER_TYPE_BUY) ? entryPrice + TakeProfit * _Point : entryPrice - TakeProfit * _Point;
+   tp = NormalizeDouble(tp, _Digits);
+
+   // Store the first take-profit in virtual memory
+   tradeMemory.virtualTP = tp;
+   tradeMemory.lastSL = 0;  // No stop-loss initially
+
+   bool tradeResult = (orderType == ORDER_TYPE_BUY) ? trade.Buy(LotSize, NULL, 0, 0, tp) : trade.Sell(LotSize, NULL, 0, 0, tp);
+
+   if (tradeResult)
+      Print((orderType == ORDER_TYPE_BUY ? "Buy" : "Sell"), " Order Placed Successfully at: ", entryPrice, " with TP: ", tp);
+   else
+      Print((orderType == ORDER_TYPE_BUY ? "Buy" : "Sell"), " Order Failed. Error: ", GetLastError());
+}
+
+// Function to manage trailing TP and virtual SL
+void ManageOpenPositions()
+{
+   for (int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      if (PositionGetSymbol(i) == _Symbol)
+      {
+         ulong positionTicket = PositionGetInteger(POSITION_TICKET);
+         long positionType = PositionGetInteger(POSITION_TYPE);
+         double currentPrice = (positionType == POSITION_TYPE_BUY) ? SymbolInfoDouble(_Symbol, SYMBOL_BID) : SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+         double virtualTP = tradeMemory.virtualTP;
+         double trailingStep = TrailingStep * _Point;
+
+         // If price crosses the virtual TP
+         if ((positionType == POSITION_TYPE_BUY && currentPrice >= virtualTP) ||
+             (positionType == POSITION_TYPE_SELL && currentPrice <= virtualTP))
+         {
+            // Set new stop-loss at the current virtual TP
+            double newSL = virtualTP;
+            tradeMemory.lastSL = newSL;  // For debugging
+
+            // Update virtual TP for the next trailing step
+            if (positionType == POSITION_TYPE_BUY)
+               tradeMemory.virtualTP += trailingStep;
+            else
+               tradeMemory.virtualTP -= trailingStep;
+
+            // Modify the position to update SL
+            MqlTradeRequest request;
+            MqlTradeResult result;
+            ZeroMemory(request);
+            ZeroMemory(result);
+
+            request.action = TRADE_ACTION_SLTP;
+            request.position = positionTicket;
+            request.symbol = _Symbol;
+            request.sl = NormalizeDouble(newSL, _Digits);  // Set new SL
+            request.tp = tradeMemory.virtualTP;  // Keep trailing TP
+
+            if (!OrderSend(request, result))
+               Print("Failed to update stop-loss for position: ", GetLastError());
+            else
+               Print("Stop-loss updated to: ", newSL, " and new virtual TP set to: ", tradeMemory.virtualTP);
+         }
+      }
+   }
+}
