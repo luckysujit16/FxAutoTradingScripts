@@ -17,8 +17,10 @@ extern double TrailingStop = 20;       // Trailing stop in points
 extern double TriggerFactor = 100;     // Momentum trigger level
 extern int Timeframe = 15;             // Timeframe for momentum calculation
 extern int UpdateInterval = 60;        // Trailing stop update interval in seconds
+extern int CoolingPeriod = 5;          // Cooling period in seconds between trades
 
 int winCount = 0;                      // Counter for consecutive winning trades
+datetime lastTradeTime = 0;            // Time of the last executed trade
 static datetime lastUpdateTime = 0;    // Last time trailing stop was updated
 bool buyTradeExecuted = false;         // Tracks whether a BUY trade has been executed
 bool sellTradeExecuted = false;        // Tracks whether a SELL trade has been executed
@@ -58,31 +60,31 @@ void OnTick()
     Print("== OnTick Triggered ==");
     Print("Debug: firstTradeExecuted = ", firstTradeExecuted, ", OrdersTotal() = ", OrdersTotal());
 
+    // Prevent trades within the cooling period
+    if (TimeCurrent() - lastTradeTime < CoolingPeriod)
+    {
+        Print("Cooling period active. Skipping trade execution.");
+        return;
+    }
+
+    Print("== OnTick Triggered ==");
+
     // Trigger the first trade if no trades exist
     if (OrdersTotal() == 0)
     {
-        Print("Condition satisfied for first trade. Executing OpenFirstTrade.");
+        Print("No trades exist. Executing OpenFirstTrade.");
         OpenFirstTrade();
-        if (OrdersTotal() > 0) // Verify if a trade was actually opened
+        if (OrdersTotal() > 0)
         {
-            firstTradeExecuted = true;
-            Print("First trade successfully executed. Setting flag to true.");
-        }
-        else
-        {
-            Print("First trade execution failed. Check trade conditions.");
+            lastTradeTime = TimeCurrent(); // Update the last trade time
         }
         return; // Exit to prevent further execution in the same tick
     }
-
     // Manage existing trades
     ManageOpenPositions();
     
+    OpenTradeWithTrigger();
     
-    // Open counter trades
-    int maxBuyTrades = MaxTrades / 2;
-    int maxSellTrades = MaxTrades - maxBuyTrades;
-    OpenCounterTrades(maxBuyTrades, maxSellTrades);
 }
 
 
@@ -116,7 +118,7 @@ void OpenFirstTrade()
     {
         OpenBuyTrade();
     }
-    else if (momentumValue < -TriggerFactor && lastCandleOpen > lastCandleClose)
+    else if (momentumValue < TriggerFactor && lastCandleOpen > lastCandleClose)
     {
         OpenSellTrade();
     }
@@ -128,17 +130,27 @@ void OpenFirstTrade()
 
 
 //+------------------------------------------------------------------+
-//| Open Max Trades based on Trigger                                |
-//+------------------------------------------------------------------+
-
-//+------------------------------------------------------------------+
 //| Open Trade with Trigger Logic                                    |
 //+------------------------------------------------------------------+
+
 void OpenTradeWithTrigger()
 {
+    //static datetime lastTradeTime = 0;
+
+    // Prevent multiple executions in the same tick
+    if (TimeCurrent() == lastTradeTime)
+    {
+        Print("Trade already executed in the current tick. Skipping...");
+        return;
+    }
+    lastTradeTime = TimeCurrent();
+
     int buyTradeCount = 0, sellTradeCount = 0;
     CountExistingTrades(buyTradeCount, sellTradeCount);
 
+    Print("Current Trades: BUY = ", buyTradeCount, ", SELL = ", sellTradeCount);
+
+    // Ensure we do not exceed MaxTrades
     if (buyTradeCount + sellTradeCount >= MaxTrades)
     {
         Print("MaxTrades limit reached. No new trades will be opened.");
@@ -148,18 +160,33 @@ void OpenTradeWithTrigger()
     int maxBuyTrades = MaxTrades / 2;
     int maxSellTrades = MaxTrades - maxBuyTrades;
 
-    while (buyTradeCount < maxBuyTrades && (buyTradeCount + sellTradeCount) < MaxTrades)
+    // Perform momentum check once
+    double momentumValue, lastCandleOpen, lastCandleClose;
+    if (!CheckMomentumTrigger(momentumValue, lastCandleOpen, lastCandleClose))
     {
+        Print("Momentum conditions not met. No trades will be opened.");
+        return;
+    }
+
+    // Open a single BUY trade if conditions are met and limits allow
+    if (momentumValue > TriggerFactor && lastCandleClose > lastCandleOpen && buyTradeCount < maxBuyTrades)
+    {
+        Print("Opening a BUY trade. Current BUY trades: ", buyTradeCount);
         OpenBuyTrade();
         buyTradeCount++;
     }
 
-    while (sellTradeCount < maxSellTrades && (buyTradeCount + sellTradeCount) < MaxTrades)
+    // Open a single SELL trade if conditions are met and limits allow
+    if (momentumValue < TriggerFactor && lastCandleOpen > lastCandleClose && sellTradeCount < maxSellTrades)
     {
+        Print("Opening a SELL trade. Current SELL trades: ", sellTradeCount);
         OpenSellTrade();
         sellTradeCount++;
     }
+
+    Print("Trade execution cycle completed. Total Trades: ", buyTradeCount + sellTradeCount);
 }
+
 
 
 //+------------------------------------------------------------------+
@@ -232,29 +259,28 @@ void OpenCounterTrades(int maxBuyTrades, int maxSellTrades)
     int buyCount = 0, sellCount = 0;
     CountExistingTrades(buyCount, sellCount);
 
-    // Counter trade for BUY trades
-    if (buyCount > sellCount && sellCount < maxSellTrades)
+    Print("Counter Trades Check - Current BUY: ", buyCount, ", Current SELL: ", sellCount);
+
+    // Open counter SELL trades if BUY trades are higher
+    while (buyCount > sellCount && sellCount < maxSellTrades && (buyCount + sellCount) < MaxTrades)
     {
-        if (buyCount + sellCount < MaxTrades) // Ensure MaxTrades is respected
-        {
-            Print("Unbalanced trades: Opening a counter SELL trade.");
-            OpenSellTrade();
-        }
+        Print("Opening a counter SELL trade to balance BUY trades.");
+        OpenSellTrade();
+        sellCount++;
     }
 
-    // Counter trade for SELL trades
-    if (sellCount > buyCount && buyCount < maxBuyTrades)
+    // Open counter BUY trades if SELL trades are higher
+    while (sellCount > buyCount && buyCount < maxBuyTrades && (buyCount + sellCount) < MaxTrades)
     {
-        if (buyCount + sellCount < MaxTrades) // Ensure MaxTrades is respected
-        {
-            Print("Unbalanced trades: Opening a counter BUY trade.");
-            OpenBuyTrade();
-        }
+        Print("Opening a counter BUY trade to balance SELL trades.");
+        OpenBuyTrade();
+        buyCount++;
     }
 
     // Log current trade counts
-    Print("Current Trades After Counter Logic: BUY = ", buyCount, ", SELL = ", sellCount);
+    Print("Trades After Counter Logic: BUY = ", buyCount, ", SELL = ", sellCount);
 }
+
 
 //+------------------------------------------------------------------+
 //| Manage Open Positions                                         |
@@ -284,10 +310,17 @@ void ManageOpenPositions()
             UpdateStopLossAndTakeProfit(ticket, openPrice, currentPrice, orderType);
         }
     }
+
+    // Open additional trades to reach MaxTrades
+    int maxBuyTrades = MaxTrades / 2;
+    int maxSellTrades = MaxTrades - maxBuyTrades;
+
+    //OpenCounterTrades(maxBuyTrades, maxSellTrades);
 }
 
+
 //+------------------------------------------------------------------+
-//| Update StopLoss And Take Profit                                         |
+//| Update StopLoss And Take Profit                                  |
 //+------------------------------------------------------------------+
 
 void UpdateStopLossAndTakeProfit(int ticket, double openPrice, double currentPrice, int orderType)
@@ -335,3 +368,20 @@ void UpdateStopLossAndTakeProfit(int ticket, double openPrice, double currentPri
     }
 }
 
+//+------------------------------------------------------------------+
+//| Check Momentum Trigger                                           |
+//+------------------------------------------------------------------+
+
+bool CheckMomentumTrigger(double &momentumValue, double &lastCandleOpen, double &lastCandleClose)
+{
+    // Calculate momentum and candle details
+    momentumValue = iMomentum(NULL, Timeframe, 14, PRICE_CLOSE, 0);
+    lastCandleOpen = iOpen(NULL, Timeframe, 1);
+    lastCandleClose = iClose(NULL, Timeframe, 1);
+
+    Print("Momentum Value: ", momentumValue);
+    Print("Last Candle - Open: ", lastCandleOpen, ", Close: ", lastCandleClose);
+
+    // Return true if momentum and candle details are valid
+    return true;
+}
