@@ -1,163 +1,337 @@
-#property copyright       "Copyright 2025, Sujit Jadhav."
-#property link            "https://www.sujitjadhav.me"
-#property version         "1.01"
-#property codingstandard  "mql4"
-
-#include <trade/trade.mqh>
+//+------------------------------------------------------------------+
+//|                   MomentumTradeWithTrailingTPAndCounterTrade.mq4 |
+//|                                                   Sujit S Jadhav |
+//|                                       https://www.sujitjadhav.me |
+//+------------------------------------------------------------------+
+#property copyright "Sujit S Jadhav"
+#property link      "https://www.sujitjadhav.me"
+#property version   "1.04"
 
 //+------------------------------------------------------------------+
-//| Expert Advisor Initialization                                    |
+//| External Inputs                                                 |
 //+------------------------------------------------------------------+
-extern int MinTradeCount = 2;          // Minimum open trades required
+extern int MaxTrades = 10;             // Maximum trades the EA can open
 extern double LotSize = 0.1;           // Lot size
 extern double TakeProfit = 50;         // Take profit in points
 extern double TrailingStop = 20;       // Trailing stop in points
 extern double TriggerFactor = 100;     // Momentum trigger level
-extern int Timeframe = 15;             // Timeframe in minutes
+extern int Timeframe = 15;             // Timeframe for momentum calculation
+extern int UpdateInterval = 60;        // Trailing stop update interval in seconds
 
-int handleMomentum;                    // Momentum indicator handle
-double firstTradePrice = 0;            // Price of the first trade
-bool isCounterTrade = false;           // Flag to track counter trade logic
+int winCount = 0;                      // Counter for consecutive winning trades
+static datetime lastUpdateTime = 0;    // Last time trailing stop was updated
+bool buyTradeExecuted = false;         // Tracks whether a BUY trade has been executed
+bool sellTradeExecuted = false;        // Tracks whether a SELL trade has been executed
+
+bool firstTradeExecuted = false;  // Tracks whether the first trade has been executed
+
 
 //+------------------------------------------------------------------+
-//| Initialization Function                                          |
+//| Expert Initialization                                            |
 //+------------------------------------------------------------------+
-int init()
+int OnInit()
 {
-   if (MinTradeCount < 2)
-   {
-      Print("Error: MinTradeCount must be at least 2!");
-      return(INIT_FAILED);
-   }
-
-   handleMomentum = iMomentum(Symbol(), Timeframe, 14, PRICE_CLOSE);  // Initialize Momentum
-   if (handleMomentum < 0)
-   {
-      Print("Failed to initialize Momentum indicator. Error: ", GetLastError());
-      return(INIT_FAILED);
-   }
-
-   Print("== EA Initialized ==");
-   Print("Parameters: MinTradeCount=", MinTradeCount, ", LotSize=", LotSize, 
-         ", TakeProfit=", TakeProfit, ", TrailingStop=", TrailingStop, ", TriggerFactor=", TriggerFactor);
-   return(INIT_SUCCEEDED);
+    Print("== EA Initialized ==");
+    return(INIT_SUCCEEDED);
 }
 
 //+------------------------------------------------------------------+
-//| Deinitialization Function                                        |
+//| Expert Deinitialization                                          |
 //+------------------------------------------------------------------+
-int deinit()
+void OnDeinit(const int reason)
 {
-   Print("== EA Deinitialized ==");
-   return(0);
+    Print("== EA Deinitialized ==");
 }
 
 //+------------------------------------------------------------------+
-//| Main Function                                                    |
+//| Main Function (OnTick)                                           |
 //+------------------------------------------------------------------+
-int start()
+//+------------------------------------------------------------------+
+//| Main Function (OnTick)                                           |
+//+------------------------------------------------------------------+
+void OnTick()
 {
-   Print("== OnTick Triggered ==");
-   Print("Total Open Trades: ", OrdersTotal());
+    // Reset trade execution flags at the start of each tick
+    buyTradeExecuted = false;
+    sellTradeExecuted = false;
 
-   // Check if minimum trades are open
-   if (OrdersTotal() < MinTradeCount)
-   {
-      Print("Opening new trades as total trades (", OrdersTotal(), ") < MinTradeCount (", MinTradeCount, ")");
-      OpenTradeWithCounter();
-   }
-   else
-   {
-      Print("Sufficient trades are open. Managing positions...");
-   }
+    Print("== OnTick Triggered ==");
+    Print("Debug: firstTradeExecuted = ", firstTradeExecuted, ", OrdersTotal() = ", OrdersTotal());
 
-   // Manage existing trades
-   ManageOpenPositions();
+    // Trigger the first trade if no trades exist
+    if (OrdersTotal() == 0)
+    {
+        Print("Condition satisfied for first trade. Executing OpenFirstTrade.");
+        OpenFirstTrade();
+        if (OrdersTotal() > 0) // Verify if a trade was actually opened
+        {
+            firstTradeExecuted = true;
+            Print("First trade successfully executed. Setting flag to true.");
+        }
+        else
+        {
+            Print("First trade execution failed. Check trade conditions.");
+        }
+        return; // Exit to prevent further execution in the same tick
+    }
 
-   return(0);
+    // Manage existing trades
+    ManageOpenPositions();
+    
+    
+    // Open counter trades
+    int maxBuyTrades = MaxTrades / 2;
+    int maxSellTrades = MaxTrades - maxBuyTrades;
+    OpenCounterTrades(maxBuyTrades, maxSellTrades);
+}
+
+
+
+
+//+------------------------------------------------------------------+
+//| Open First Trade Based on Momentum                               |
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Open First Trade Based on Momentum                               |
+//+------------------------------------------------------------------+
+void OpenFirstTrade()
+{
+    int buyCount, sellCount;
+    CountExistingTrades(buyCount, sellCount);
+
+    if (buyCount + sellCount > 0)
+    {
+        Print("Trades already exist. Skipping first trade execution.");
+        return;
+    }
+
+    double momentumValue = iMomentum(NULL, Timeframe, 14, PRICE_CLOSE, 0);
+    double lastCandleOpen = iOpen(NULL, Timeframe, 1);
+    double lastCandleClose = iClose(NULL, Timeframe, 1);
+
+    Print("Momentum Value: ", momentumValue);
+    Print("Last Candle - Open: ", lastCandleOpen, ", Close: ", lastCandleClose);
+
+    if (momentumValue > TriggerFactor && lastCandleClose > lastCandleOpen)
+    {
+        OpenBuyTrade();
+    }
+    else if (momentumValue < -TriggerFactor && lastCandleOpen > lastCandleClose)
+    {
+        OpenSellTrade();
+    }
+    else
+    {
+        Print("Momentum condition not met. No first trade executed.");
+    }
+}
+
+
+//+------------------------------------------------------------------+
+//| Open Max Trades based on Trigger                                |
+//+------------------------------------------------------------------+
+
+//+------------------------------------------------------------------+
+//| Open Trade with Trigger Logic                                    |
+//+------------------------------------------------------------------+
+void OpenTradeWithTrigger()
+{
+    int buyTradeCount = 0, sellTradeCount = 0;
+    CountExistingTrades(buyTradeCount, sellTradeCount);
+
+    if (buyTradeCount + sellTradeCount >= MaxTrades)
+    {
+        Print("MaxTrades limit reached. No new trades will be opened.");
+        return;
+    }
+
+    int maxBuyTrades = MaxTrades / 2;
+    int maxSellTrades = MaxTrades - maxBuyTrades;
+
+    while (buyTradeCount < maxBuyTrades && (buyTradeCount + sellTradeCount) < MaxTrades)
+    {
+        OpenBuyTrade();
+        buyTradeCount++;
+    }
+
+    while (sellTradeCount < maxSellTrades && (buyTradeCount + sellTradeCount) < MaxTrades)
+    {
+        OpenSellTrade();
+        sellTradeCount++;
+    }
+}
+
+
+//+------------------------------------------------------------------+
+//| Open Buy Trade                                |
+//+------------------------------------------------------------------+
+
+void OpenBuyTrade()
+{
+    double buyPrice = Ask;
+
+    // Open a new BUY trade
+    int buyTicket = OrderSend(Symbol(), OP_BUY, LotSize, buyPrice, 3, 0, buyPrice + TakeProfit * Point, "Momentum - BUY", 0, 0, clrBlue);
+
+    if (buyTicket < 0)
+    {
+        Print("Failed to open BUY trade. Error: ", GetLastError());
+        return;
+    }
+
+    Print("BUY trade opened successfully. Ticket: ", buyTicket, ", Price: ", buyPrice, ", TP: ", buyPrice + TakeProfit * Point);
 }
 
 //+------------------------------------------------------------------+
-//| Function to Open a Trade and its Counter Trade                   |
+//| Open Sell Trade
 //+------------------------------------------------------------------+
-void OpenTradeWithCounter()
+
+void OpenSellTrade()
 {
-   double momentumValue = iMomentum(NULL, Timeframe, 14, PRICE_CLOSE);
-   Print("Momentum Value: ", momentumValue);
+    double sellPrice = Bid;
 
-   if (momentumValue > TriggerFactor)
-   {
-      Print("Momentum Triggered: Opening BUY and Counter SELL trades.");
+    // Open a new SELL trade
+    int sellTicket = OrderSend(Symbol(), OP_SELL, LotSize, sellPrice, 3, 0, sellPrice - TakeProfit * Point, "Momentum - SELL", 0, 0, clrRed);
 
-      // Open BUY trade
-      double buyPrice = Ask;
-      int buyTicket = OrderSend(Symbol(), OP_BUY, LotSize, buyPrice, 3, 0, buyPrice + TakeProfit * Point, "First Trade - BUY", 0, 0, clrBlue);
-      if (buyTicket < 0)
-      {
-         Print("Failed to open BUY trade. Error: ", GetLastError());
-         return;
-      }
-      Print("BUY trade opened successfully. Ticket: ", buyTicket, ", Price: ", buyPrice, ", TP: ", buyPrice + TakeProfit * Point);
+    if (sellTicket < 0)
+    {
+        Print("Failed to open SELL trade. Error: ", GetLastError());
+        return;
+    }
 
-      // Open Counter SELL trade
-      double sellPrice = Bid;
-      int sellTicket = OrderSend(Symbol(), OP_SELL, LotSize, sellPrice, 3, 0, sellPrice - TakeProfit * Point, "Counter Trade - SELL", 0, 0, clrRed);
-      if (sellTicket < 0)
-      {
-         Print("Failed to open SELL trade. Error: ", GetLastError());
-         return;
-      }
-      Print("SELL trade opened successfully. Ticket: ", sellTicket, ", Price: ", sellPrice, ", TP: ", sellPrice - TakeProfit * Point);
-
-      // Track the first trade price
-      firstTradePrice = buyPrice;
-      isCounterTrade = true;
-   }
-   else
-   {
-      Print("Momentum not triggered. Value (", momentumValue, ") <= TriggerFactor (", TriggerFactor, ")");
-   }
+    Print("SELL trade opened successfully. Ticket: ", sellTicket, ", Price: ", sellPrice, ", TP: ", sellPrice - TakeProfit * Point);
 }
 
 //+------------------------------------------------------------------+
-//| Function to Manage Open Positions                                |
+//| Count Existing Trades                                            |
 //+------------------------------------------------------------------+
+
+void CountExistingTrades(int &buyCount, int &sellCount)
+{
+    buyCount = 0;
+    sellCount = 0;
+
+    for (int i = 0; i < OrdersTotal(); i++)
+    {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+        {
+            if (OrderType() == OP_BUY) buyCount++;
+            else if (OrderType() == OP_SELL) sellCount++;
+        }
+    }
+
+    Print("Current Trades: BUY = ", buyCount, ", SELL = ", sellCount);
+}
+
+
+//+------------------------------------------------------------------+
+//| Open Counter Trade Logic                                         |
+//+------------------------------------------------------------------+
+void OpenCounterTrades(int maxBuyTrades, int maxSellTrades)
+{
+    int buyCount = 0, sellCount = 0;
+    CountExistingTrades(buyCount, sellCount);
+
+    // Counter trade for BUY trades
+    if (buyCount > sellCount && sellCount < maxSellTrades)
+    {
+        if (buyCount + sellCount < MaxTrades) // Ensure MaxTrades is respected
+        {
+            Print("Unbalanced trades: Opening a counter SELL trade.");
+            OpenSellTrade();
+        }
+    }
+
+    // Counter trade for SELL trades
+    if (sellCount > buyCount && buyCount < maxBuyTrades)
+    {
+        if (buyCount + sellCount < MaxTrades) // Ensure MaxTrades is respected
+        {
+            Print("Unbalanced trades: Opening a counter BUY trade.");
+            OpenBuyTrade();
+        }
+    }
+
+    // Log current trade counts
+    Print("Current Trades After Counter Logic: BUY = ", buyCount, ", SELL = ", sellCount);
+}
+
+//+------------------------------------------------------------------+
+//| Manage Open Positions                                         |
+//+------------------------------------------------------------------+
+
 void ManageOpenPositions()
 {
-   for (int i = 0; i < OrdersTotal(); i++)
-   {
-      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
-      {
-         double openPrice = OrderOpenPrice();
-         double currentPrice = (OrderType() == OP_BUY) ? Bid : Ask;
-         double profit = OrderProfit();
-         Print("Managing Trade. Ticket: ", OrderTicket(), ", Type: ", (OrderType() == OP_BUY ? "BUY" : "SELL"), 
-               ", Open Price: ", openPrice, ", Current Price: ", currentPrice, ", Profit: ", profit);
+    double minStopLevel = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point;
 
-         // Manage trailing stop-loss
-         if (OrderType() == OP_BUY && currentPrice > openPrice + TrailingStop * Point)
-         {
-            double newSL = currentPrice - TrailingStop * Point;
-            if (OrderModify(OrderTicket(), openPrice, newSL, OrderTakeProfit(), 0, clrBlue))
-               Print("Updated SL for BUY trade. Ticket: ", OrderTicket(), ", New SL: ", newSL);
-            else
-               Print("Failed to update SL for BUY trade. Error: ", GetLastError());
-         }
-         else if (OrderType() == OP_SELL && currentPrice < openPrice - TrailingStop * Point)
-         {
-            double newSL = currentPrice + TrailingStop * Point;
-            if (OrderModify(OrderTicket(), openPrice, newSL, OrderTakeProfit(), 0, clrRed))
-               Print("Updated SL for SELL trade. Ticket: ", OrderTicket(), ", New SL: ", newSL);
-            else
-               Print("Failed to update SL for SELL trade. Error: ", GetLastError());
-         }
+    Print("== ManageOpenPositions Triggered ==");
 
-         // Check if trade closed with profit
-         if (profit > 0 && OrderCloseTime() > 0)
-         {
-            Print("Trade closed with profit. Ticket: ", OrderTicket(), ", Profit: ", profit);
-            OpenTradeWithCounter();
-         }
-      }
-   }
+    for (int i = 0; i < OrdersTotal(); i++)
+    {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+        {
+            double openPrice = OrderOpenPrice();
+            double currentPrice = (OrderType() == OP_BUY) ? Bid : Ask;
+            int ticket = OrderTicket();
+            int orderType = OrderType();
+
+            // Log trade details
+            Print("Managing Trade. Ticket: ", ticket,
+                  ", Type: ", (orderType == OP_BUY ? "BUY" : "SELL"),
+                  ", Open Price: ", openPrice, ", Current Price: ", currentPrice);
+
+            // Call the UpdateStopLossAndTakeProfit function
+            UpdateStopLossAndTakeProfit(ticket, openPrice, currentPrice, orderType);
+        }
+    }
 }
+
+//+------------------------------------------------------------------+
+//| Update StopLoss And Take Profit                                         |
+//+------------------------------------------------------------------+
+
+void UpdateStopLossAndTakeProfit(int ticket, double openPrice, double currentPrice, int orderType)
+{
+    double minStopLevel = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point;
+
+    // Calculate new Stop Loss and Take Profit
+    double newStopLoss, newTakeProfit;
+
+    if (orderType == OP_BUY)
+    {
+        // Calculate trailing SL and TP for BUY trades
+        newStopLoss = MathMax(openPrice, currentPrice - minStopLevel);
+        newTakeProfit = currentPrice + (currentPrice - openPrice);
+    }
+    else if (orderType == OP_SELL)
+    {
+        // Calculate trailing SL and TP for SELL trades
+        newStopLoss = MathMin(openPrice, currentPrice + minStopLevel);
+        newTakeProfit = currentPrice - (openPrice - currentPrice);
+    }
+    else
+    {
+        Print("Invalid order type for SL/TP update. Ticket: ", ticket);
+        return;
+    }
+
+    // Validate SL and TP distances from the current price
+    if ((orderType == OP_BUY && (newStopLoss >= currentPrice || newTakeProfit <= currentPrice)) ||
+        (orderType == OP_SELL && (newStopLoss <= currentPrice || newTakeProfit >= currentPrice)))
+    {
+        Print("Invalid SL/TP levels for trade. Ticket: ", ticket, 
+              ", SL: ", newStopLoss, ", TP: ", newTakeProfit, ", Current Price: ", currentPrice);
+        return;
+    }
+
+    // Attempt to modify the order
+    if (OrderModify(ticket, openPrice, newStopLoss, newTakeProfit, 0, (orderType == OP_BUY) ? clrBlue : clrRed))
+    {
+        Print("Updated SL/TP for trade. Ticket: ", ticket, ", SL: ", newStopLoss, ", TP: ", newTakeProfit);
+    }
+    else
+    {
+        Print("Failed to update SL/TP for trade. Ticket: ", ticket, ", Error: ", GetLastError());
+    }
+}
+
