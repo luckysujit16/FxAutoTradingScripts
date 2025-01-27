@@ -1,3 +1,4 @@
+
 //+------------------------------------------------------------------+
 //|                   MomentumTradeWithTrailingTPAndCounterTrade.mq5 |
 //|                                                   Sujit S Jadhav |
@@ -5,18 +6,20 @@
 //+------------------------------------------------------------------+
 #property copyright "Sujit S Jadhav"
 #property link      "https://www.sujitjadhav.me"
-#property version   "1.04"
+#property version   "1.05"
 
 #include <Trade\Trade.mqh>
 
-input int MaxTrades = 10;              // Maximum trades the EA can open
-input double LotSize = 0.1;            // Lot size
+input int MaxTrades = 2;              // Maximum trades the EA can open
+input double LotSize = 0.02;            // Lot size
 input double TakeProfit = 50;          // Take profit in points
 input double TrailingStop = 20;        // Trailing stop in points
 input double TriggerFactor = 100;      // Momentum trigger level
-input int Timeframe = PERIOD_M15;      // Timeframe for momentum calculation
+input ENUM_TIMEFRAMES Timeframe = PERIOD_M15; // Timeframe for momentum calculation
 input int UpdateInterval = 60;         // Trailing stop update interval in seconds
 input int CoolingPeriod = 5;           // Cooling period in seconds between trades
+input int StartHour = 9;  // Start of trading (9 AM)
+input int EndHour = 17;   // End of trading (5 PM)
 
 int winCount = 0;                      // Counter for consecutive winning trades
 datetime lastTradeTime = 0;            // Time of the last executed trade
@@ -29,8 +32,8 @@ CTrade trade;                          // Trade object for managing orders
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   Print("== EA Initialized ==");
-   return(INIT_SUCCEEDED);
+    Print("== EA Initialized ==");
+    return(INIT_SUCCEEDED);
 }
 
 //+------------------------------------------------------------------+
@@ -38,7 +41,7 @@ int OnInit()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   Print("== EA Deinitialized ==");
+    Print("== EA Deinitialized ==");
 }
 
 //+------------------------------------------------------------------+
@@ -46,32 +49,54 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 void OnTick()
 {
-   Print("== OnTick Triggered ==");
 
-   // Prevent trades within the cooling period
-   if (TimeCurrent() - lastTradeTime < CoolingPeriod)
-   {
-      Print("Cooling period active. Skipping trade execution.");
-      return;
-   }
+    Print("========================= OnTick Triggered =========================");
 
-   // Trigger the first trade if no trades exist
-   if (PositionsTotal() == 0)
-   {
-      Print("No trades exist. Executing OpenFirstTrade.");
-      OpenFirstTrade();
-      if (PositionsTotal() > 0)
-      {
-         lastTradeTime = TimeCurrent(); // Update the last trade time
-      }
-      return; // Exit to prevent further execution in the same tick
-   }
+    // Check if the current time is within allowed trading hours
+    MqlDateTime timeStruct;
+    TimeToStruct(TimeCurrent(), timeStruct);  // Convert current time to a time structure
 
-   // Manage existing trades
-   ManageOpenPositions();
+    int currentHour = timeStruct.hour;  // Get the current hour from the structure
+    Print("Current Hour: ", currentHour);
 
-   // Open trades with trigger logic
-   OpenTradeWithTrigger();
+    // Validate trading hours
+    if (currentHour < StartHour || currentHour >= EndHour)
+    {
+        Print("Trading is restricted during this time. Current Hour: ", currentHour);
+        return;  // Exit if outside allowed trading hours
+    }  
+      
+    if (TimeCurrent() - lastTradeTime < CoolingPeriod)
+    {
+        Print("Cooling period active. Skipping trade execution.");
+        return;
+    }
+    
+    
+    // Check global profit target
+    if (CheckGlobalProfit())
+    {
+        Print("Global Profit Target Reached! Closing all positions...");
+        CloseAllPositions();
+        return;
+    }
+
+    if (PositionsTotal() == 0)
+    {
+        OpenFirstTrade();
+        if (PositionsTotal() > 0)
+        {
+            lastTradeTime = TimeCurrent();
+        }
+        return;
+    }
+    
+    // Manage existing trades
+    ManageOpenPositions();
+
+    // Open trades with trigger logic
+    OpenTradeWithTrigger();
+
 }
 
 //+------------------------------------------------------------------+
@@ -79,31 +104,36 @@ void OnTick()
 //+------------------------------------------------------------------+
 void OpenFirstTrade()
 {
-   if (PositionsTotal() > 0)
-   {
-      Print("Trades already exist. Skipping first trade execution.");
-      return;
-   }
+    if (PositionsTotal() > 0) return;
 
-   double momentumValue = iMomentum(NULL, Timeframe, 14, PRICE_CLOSE, 0);
-   double lastCandleOpen = iOpen(NULL, Timeframe, 1);
-   double lastCandleClose = iClose(NULL, Timeframe, 1);
+    int momentumHandle = iMomentum(_Symbol, Timeframe, 14, PRICE_CLOSE);
+    if (momentumHandle < 0)
+    {
+        Print("Failed to create iMomentum handle. Error: ", GetLastError());
+        return;
+    }
 
-   Print("Momentum Value: ", momentumValue);
-   Print("Last Candle - Open: ", lastCandleOpen, ", Close: ", lastCandleClose);
+    double momentumValue[];
+    if (CopyBuffer(momentumHandle, 0, 0, 1, momentumValue) <= 0)
+    {
+        Print("Failed to retrieve Momentum values. Error: ", GetLastError());
+        IndicatorRelease(momentumHandle);
+        return;
+    }
 
-   if (momentumValue > TriggerFactor && lastCandleClose > lastCandleOpen)
-   {
-      OpenBuyTrade();
-   }
-   else if (momentumValue < -TriggerFactor && lastCandleOpen > lastCandleClose)
-   {
-      OpenSellTrade();
-   }
-   else
-   {
-      Print("Momentum condition not met. No first trade executed.");
-   }
+    double lastCandleOpen = iOpen(_Symbol, Timeframe, 1);
+    double lastCandleClose = iClose(_Symbol, Timeframe, 1);
+
+    if (momentumValue[0] > TriggerFactor && lastCandleClose > lastCandleOpen)
+    {
+        OpenBuyTrade();
+    }
+    else if (momentumValue[0] < -TriggerFactor && lastCandleOpen > lastCandleClose)
+    {
+        OpenSellTrade();
+    }
+
+    IndicatorRelease(momentumHandle);
 }
 
 //+------------------------------------------------------------------+
@@ -111,25 +141,37 @@ void OpenFirstTrade()
 //+------------------------------------------------------------------+
 void OpenTradeWithTrigger()
 {
-   if (PositionsTotal() >= MaxTrades)
-   {
-      Print("MaxTrades limit reached. No new trades will be opened.");
-      return;
-   }
+    if (PositionsTotal() >= MaxTrades) return;
 
-   double momentumValue = iMomentum(NULL, Timeframe, 14, PRICE_CLOSE, 0);
-   double lastCandleOpen = iOpen(NULL, Timeframe, 1);
-   double lastCandleClose = iClose(NULL, Timeframe, 1);
+    int momentumHandle = iMomentum(_Symbol, Timeframe, 14, PRICE_CLOSE);
+    if (momentumHandle < 0)
+    {
+        Print("Failed to create iMomentum handle. Error: ", GetLastError());
+        return;
+    }
 
-   if (momentumValue > TriggerFactor && lastCandleClose > lastCandleOpen)
-   {
-      OpenBuyTrade();
-   }
-   else if (momentumValue < -TriggerFactor && lastCandleOpen > lastCandleClose)
-   {
-      OpenSellTrade();
-   }
-   lastTradeTime = TimeCurrent();
+    double momentumValue[];
+    if (CopyBuffer(momentumHandle, 0, 0, 1, momentumValue) <= 0)
+    {
+        Print("Failed to retrieve Momentum values. Error: ", GetLastError());
+        IndicatorRelease(momentumHandle);
+        return;
+    }
+
+    double lastCandleOpen = iOpen(_Symbol, Timeframe, 1);
+    double lastCandleClose = iClose(_Symbol, Timeframe, 1);
+
+    if (momentumValue[0] > TriggerFactor && lastCandleClose > lastCandleOpen)
+    {
+        OpenBuyTrade();
+    }
+    else if (momentumValue[0] < -TriggerFactor && lastCandleOpen > lastCandleClose)
+    {
+        OpenSellTrade();
+    }
+
+    lastTradeTime = TimeCurrent();
+    IndicatorRelease(momentumHandle);
 }
 
 //+------------------------------------------------------------------+
@@ -137,14 +179,14 @@ void OpenTradeWithTrigger()
 //+------------------------------------------------------------------+
 void OpenBuyTrade()
 {
-   if (!trade.Buy(LotSize, Symbol(), 0, 0, 0, "Momentum - BUY"))
-   {
-      Print("Failed to open BUY trade. Error: ", GetLastError());
-   }
-   else
-   {
-      Print("BUY trade opened successfully.");
-   }
+    if (!trade.Buy(LotSize))
+    {
+        Print("Failed to open BUY trade. Error: ", GetLastError());
+    }
+    else
+    {
+        Print("BUY trade opened successfully.");
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -152,14 +194,14 @@ void OpenBuyTrade()
 //+------------------------------------------------------------------+
 void OpenSellTrade()
 {
-   if (!trade.Sell(LotSize, Symbol(), 0, 0, 0, "Momentum - SELL"))
-   {
-      Print("Failed to open SELL trade. Error: ", GetLastError());
-   }
-   else
-   {
-      Print("SELL trade opened successfully.");
-   }
+    if (!trade.Sell(LotSize))
+    {
+        Print("Failed to open SELL trade. Error: ", GetLastError());
+    }
+    else
+    {
+        Print("SELL trade opened successfully.");
+    }
 }
 
 //+------------------------------------------------------------------+
@@ -167,20 +209,187 @@ void OpenSellTrade()
 //+------------------------------------------------------------------+
 void ManageOpenPositions()
 {
-   for (int i = PositionsTotal() - 1; i >= 0; i--)
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        // Get the symbol of the position at the given index
+        string positionSymbol = PositionGetSymbol(i);
+        if (positionSymbol != NULL && PositionSelect(positionSymbol))
+        {
+            ulong ticket = PositionGetInteger(POSITION_TICKET); // Use 'ulong' for the ticket
+            long positionType = PositionGetInteger(POSITION_TYPE); // Use 'long' for position type
+            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            double currentPrice = (positionType == POSITION_TYPE_BUY) ?
+                                  SymbolInfoDouble(_Symbol, SYMBOL_BID) :
+                                  SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+            // Update SL and TP
+            UpdateStopLossAndTakeProfit(ticket, openPrice, currentPrice, (int)positionType); // Explicit cast if necessary
+        }
+    }
+}
+
+
+//+------------------------------------------------------------------+
+//| Update StopLoss And TakeProfit                                   |
+//+------------------------------------------------------------------+
+
+void UpdateStopLossAndTakeProfit(ulong ticket, double openPrice, double currentPrice, int positionType)
+{
+    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+    double stopLoss, takeProfit;
+
+    if (positionType == POSITION_TYPE_BUY)
+    {
+        stopLoss = currentPrice - TrailingStop * point;
+        takeProfit = currentPrice + TakeProfit * point;
+    }
+    else
+    {
+        stopLoss = currentPrice + TrailingStop * point;
+        takeProfit = currentPrice - TakeProfit * point;
+    }
+
+    MqlTradeRequest request;
+    MqlTradeResult result;
+
+    request.action = TRADE_ACTION_SLTP;
+    request.symbol = _Symbol;
+    request.sl = NormalizeDouble(stopLoss, _Digits);
+    request.tp = NormalizeDouble(takeProfit, _Digits);
+
+    if (!OrderSend(request, result))
+    {
+        Print("Failed to update SL/TP. Error: ", GetLastError());
+    }
+    else
+    {
+        Print("Updated SL/TP for position. Ticket: ", ticket);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Open Counter Trades                                              |
+//+------------------------------------------------------------------+
+
+void OpenCounterTrades()
+{
+   // Determine maximum allowed BUY and SELL trades
+   int maxBuyTrades = MaxTrades / 2;
+   int maxSellTrades = MaxTrades - maxBuyTrades;
+
+   // Count existing BUY and SELL trades
+   int buyCount = 0, sellCount = 0;
+   CountExistingTrades(buyCount, sellCount);
+
+   Print("Counter Trades Check - Current BUY: ", buyCount, ", Current SELL: ", sellCount);
+
+   // Open counter SELL trades if BUY trades are higher
+   while (buyCount > sellCount && sellCount < maxSellTrades && (buyCount + sellCount) < MaxTrades)
    {
-      if (PositionSelectByIndex(i))
-      {
-         ulong ticket = PositionGetInteger(POSITION_TICKET);
-         string symbol = PositionGetString(POSITION_SYMBOL);
-         double priceOpen = PositionGetDouble(POSITION_PRICE_OPEN);
-         double sl = PositionGetDouble(POSITION_SL);
-         double tp = PositionGetDouble(POSITION_TP);
-
-         Print("Managing Position - Ticket: ", ticket, ", Symbol: ", symbol);
-
-         // Example: Modify the position SL and TP (you can add your own logic)
-         trade.PositionModify(ticket, priceOpen + 50 * _Point, priceOpen - 50 * _Point);
-      }
+      Print("Opening a counter SELL trade to balance BUY trades.");
+      OpenSellTrade();
+      sellCount++;
    }
+
+   // Open counter BUY trades if SELL trades are higher
+   while (sellCount > buyCount && buyCount < maxBuyTrades && (buyCount + sellCount) < MaxTrades)
+   {
+      Print("Opening a counter BUY trade to balance SELL trades.");
+      OpenBuyTrade();
+      buyCount++;
+   }
+
+   Print("Trades After Counter Logic - BUY: ", buyCount, ", SELL: ", sellCount);
+}
+
+//+------------------------------------------------------------------+
+//| Count Existing Trades                                            |
+//+------------------------------------------------------------------+
+
+void CountExistingTrades(int &buyCount, int &sellCount)
+{
+    buyCount = 0;
+    sellCount = 0;
+
+    // Iterate through all positions
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        // Get the symbol of the position at the given index
+        string positionSymbol = PositionGetSymbol(i);
+
+        // Check if the symbol is valid and select the position
+        if (positionSymbol != NULL && PositionSelect(positionSymbol))
+        {
+            // Retrieve position details
+            long positionType = PositionGetInteger(POSITION_TYPE); // Get the position type (buy/sell)
+
+            if (positionType == POSITION_TYPE_BUY)
+            {
+                buyCount++;
+            }
+            else if (positionType == POSITION_TYPE_SELL)
+            {
+                sellCount++;
+            }
+        }
+        else
+        {
+            // Log any issues with selecting positions
+            Print("Failed to select position at index: ", i, ". Error: ", GetLastError());
+        }
+    }
+
+    // Log the counts for debugging
+    Print("Current Trades: BUY = ", buyCount, ", SELL = ", sellCount);
+}
+
+//+------------------------------------------------------------------+
+//| Check Global Profit                                              |
+//+------------------------------------------------------------------+
+
+bool CheckGlobalProfit()
+{
+    double totalProfit = 0.0;
+
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        string positionSymbol = PositionGetSymbol(i);
+
+        if (positionSymbol != NULL && PositionSelect(positionSymbol))
+        {
+            totalProfit += PositionGetDouble(POSITION_PROFIT);
+        }
+    }
+
+    Print("Current Total Profit: ", totalProfit);
+
+    // Example: Set a profit target of $100
+    double profitTarget = 100.0;
+
+    return totalProfit >= profitTarget;
+}
+
+//+------------------------------------------------------------------+
+//| Close All Positions                                              |
+//+------------------------------------------------------------------+
+
+void CloseAllPositions()
+{
+    for (int i = PositionsTotal() - 1; i >= 0; i--)
+    {
+        string positionSymbol = PositionGetSymbol(i);
+
+        if (positionSymbol != NULL && PositionSelect(positionSymbol))
+        {
+            // Close the position
+            if (!trade.PositionClose(positionSymbol))
+            {
+                Print("Failed to close position for symbol: ", positionSymbol, ". Error: ", GetLastError());
+            }
+            else
+            {
+                Print("Successfully closed position for symbol: ", positionSymbol);
+            }
+        }
+    }
 }
