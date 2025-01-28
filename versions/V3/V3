@@ -93,10 +93,12 @@ void OnTick()
 }
 
 //+------------------------------------------------------------------+
-//| Manage Trades for Each Symbol  V-01.01                           |
-//| Consider already open trades dynamically to check upadtes        |
-//| MaxTrades and Each Symbol Trades                                 |
+//| Manage Trades for Each Symbol  V-01.02                           |
+//| # Consider already open trades dynamically to check upadtes      |
+//|   MaxTrades and Each Symbol Trades                               |
+//| # PerSymbolMaxTrades enforced to keep each trade in control      |
 //+------------------------------------------------------------------+
+
 
 void ManageSymbolTrades(string symbol, int symbolIndex, int &globalBuyCount, int &globalSellCount)
 {
@@ -107,10 +109,9 @@ void ManageSymbolTrades(string symbol, int symbolIndex, int &globalBuyCount, int
     globalBuyCount += buyCount;
     globalSellCount += sellCount;
 
-    // Log current trade details
     Print("Managing trades for symbol: ", symbol, 
           " | Current BUY trades: ", buyCount, 
-          " | Current SELL trades: ", sellCount, 
+          " | Current SELL trades: ", sellCount,
           " | Global BUY: ", globalBuyCount, 
           " | Global SELL: ", globalSellCount);
 
@@ -128,15 +129,17 @@ void ManageSymbolTrades(string symbol, int symbolIndex, int &globalBuyCount, int
         return;
     }
 
-    // Prevent new trades if cooling period is active
-    if (TimeCurrent() - lastTradeTimes[symbolIndex * 2] < CoolingPeriod && buyCount < PerSymbolMaxTrades / 2)
+    // Cooling period check for BUY trades
+    if (TimeCurrent() - lastTradeTimes[symbolIndex * 2] < CoolingPeriod && buyCount > 0)
     {
-        Print("Cooling period active for BUY trades on ", symbol, ". No new trades will be opened.");
+        Print("Cooling period active for BUY trades on ", symbol, ". No new BUY trades will be opened.");
         return;
     }
-    if (TimeCurrent() - lastTradeTimes[symbolIndex * 2 + 1] < CoolingPeriod && sellCount < PerSymbolMaxTrades / 2)
+
+    // Cooling period check for SELL trades
+    if (TimeCurrent() - lastTradeTimes[symbolIndex * 2 + 1] < CoolingPeriod && sellCount > 0)
     {
-        Print("Cooling period active for SELL trades on ", symbol, ". No new trades will be opened.");
+        Print("Cooling period active for SELL trades on ", symbol, ". No new SELL trades will be opened.");
         return;
     }
 
@@ -149,8 +152,9 @@ void ManageSymbolTrades(string symbol, int symbolIndex, int &globalBuyCount, int
 
 
 //+------------------------------------------------------------------+
-//| Open Trade with Trigger Logic                                    |
+//| Open Trade with Trigger Logic V-01.01                            |
 //+------------------------------------------------------------------+
+
 bool OpenTradeWithTrigger(string symbol, int symbolIndex)
 {
     double momentumValue, lastCandleOpen, lastCandleClose;
@@ -162,28 +166,33 @@ bool OpenTradeWithTrigger(string symbol, int symbolIndex)
         return false;
     }
 
-    // Determine trade direction
+    // Determine trade direction and attempt to open
     if (momentumValue > TriggerFactor && lastCandleClose > lastCandleOpen)
     {
         double buyPrice = MarketInfo(symbol, MODE_ASK);
+
+        // Check if BUY trades are within the limit
         if (OpenTrade(symbol, OP_BUY, buyPrice, LotSize))
         {
-            lastTradeTimes[symbolIndex * 2] = TimeCurrent(); // Update last trade time for BUY
+            lastTradeTimes[symbolIndex * 2] = TimeCurrent(); // Update last BUY trade time
             return true;
         }
     }
     else if (momentumValue < -TriggerFactor && lastCandleOpen > lastCandleClose)
     {
         double sellPrice = MarketInfo(symbol, MODE_BID);
+
+        // Check if SELL trades are within the limit
         if (OpenTrade(symbol, OP_SELL, sellPrice, LotSize))
         {
-            lastTradeTimes[symbolIndex * 2 + 1] = TimeCurrent(); // Update last trade time for SELL
+            lastTradeTimes[symbolIndex * 2 + 1] = TimeCurrent(); // Update last SELL trade time
             return true;
         }
     }
 
     return false;
 }
+
 
 //+------------------------------------------------------------------+
 //| Open Trade                                                       |
