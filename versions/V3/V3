@@ -1,0 +1,327 @@
+//+------------------------------------------------------------------+
+//|                                         DemoBotMultiCurrency.mq4 |
+//|                                                   Sujit S Jadhav |
+//|                                       https://www.sujitjadhav.me |
+//+------------------------------------------------------------------+
+
+#property copyright "Sujit S Jadhav"
+#property link      "https://www.sujitjadhav.me"
+#property version   "1.06"
+
+//+------------------------------------------------------------------+
+//| External Inputs                                                 |
+//+------------------------------------------------------------------+
+extern int MaxTrades = 3;                  // Global maximum trades across all symbols
+extern int PerSymbolMaxTrades = 1;         // Maximum trades per symbol
+extern double LotSize = 0.01;              // Lot size
+extern double TakeProfit = 50;             // Take profit in points
+extern double TrailingStop = 20;           // Trailing stop in points
+extern double TriggerFactor = 100;         // Momentum trigger level
+extern int Timeframe = 15;                 // Timeframe for momentum calculation
+extern int UpdateInterval = 60;            // Trailing stop update interval in seconds
+extern int CoolingPeriod = 5;              // Cooling period in seconds between trades
+extern string Symbol1 = "BTCUSD";          // First symbol
+extern string Symbol2 = "XAUUSD";          // Second symbol
+extern string Symbol3 = "USDJPY";          // Third symbol
+
+//+------------------------------------------------------------------+
+//| Global Variables                                                 |
+//+------------------------------------------------------------------+
+datetime lastTradeTimes[];                     // Last trade execution time
+datetime lastUpdateTime;                    // Last trailing stop update time
+string Symbols[];                           // Symbols to trade on
+
+//+------------------------------------------------------------------+
+//| Expert Initialization                                            |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   // Dynamically populate the Symbols array
+    ArrayResize(Symbols, 3);
+    Symbols[0] = Symbol1;
+    Symbols[1] = Symbol2;
+    Symbols[2] = Symbol3;
+
+    // Initialize lastTradeTimes array for each symbol
+    ArrayResize(lastTradeTimes, ArraySize(Symbols) * 2); // *2 for BUY and SELL
+    for (int i = 0; i < ArraySize(lastTradeTimes); i++)
+        lastTradeTimes[i] = 0;
+
+    //Print("Symbols initialized: ", Symbols[0], ", ", Symbols[1], ", ", Symbols[2]);
+    return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| Expert Deinitialization                                          |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+{
+    //Print("== EA Deinitialized ==");
+}
+
+//+------------------------------------------------------------------+
+//| Main Function (OnTick)                                           |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+    int globalBuyCount = 0, globalSellCount = 0;
+
+    // Loop through all symbols sequentially
+    for (int i = 0; i < ArraySize(Symbols); i++)
+    {
+        string currentSymbol = Symbols[i];
+
+        // Manage trades for each symbol
+        ManageSymbolTrades(currentSymbol, i, globalBuyCount, globalSellCount);
+        
+        // Close trades dynamically when profit exceeds $1
+        CloseTradesOnProfit();
+
+        // Check global max trades
+        if (globalBuyCount + globalSellCount >= MaxTrades)
+        {
+            //Print("Global MaxTrades limit reached. No new trades will be opened.");
+            return;
+        }
+    }
+
+    // Close trades dynamically when profit exceeds $1
+    // CloseTradesOnProfit();
+
+    // Log the status of all open trades
+    LogAllTradesStatus();
+}
+
+//+------------------------------------------------------------------+
+//| Manage Trades for Each Symbol                                    |
+//+------------------------------------------------------------------+
+void ManageSymbolTrades(string symbol, int symbolIndex, int &globalBuyCount, int &globalSellCount)
+{
+    int buyCount = 0, sellCount = 0;
+    CountExistingTrades(symbol, buyCount, sellCount);
+
+    // Update global trade counts
+    globalBuyCount += buyCount;
+    globalSellCount += sellCount;
+
+    //Print("Managing trades for symbol: ", symbol, 
+    //      " | Current BUY trades: ", buyCount, 
+    //      " | Current SELL trades: ", sellCount);
+
+    // Prevent new trades if cooling period is active for BUY or SELL
+    if (TimeCurrent() - lastTradeTimes[symbolIndex * 2] < CoolingPeriod && buyCount < PerSymbolMaxTrades / 2)
+    {
+        Print("Cooling period active for BUY trades on ", symbol, ". No new trades will be opened.");
+        return;
+    }
+    if (TimeCurrent() - lastTradeTimes[symbolIndex * 2 + 1] < CoolingPeriod && sellCount < PerSymbolMaxTrades / 2)
+    {
+        Print("Cooling period active for SELL trades on ", symbol, ". No new trades will be opened.");
+        return;
+    }
+
+    // Check if we can open more trades for this symbol
+    if (buyCount + sellCount >= PerSymbolMaxTrades)
+    {
+        //Print("Per-symbol MaxTrades limit reached for ", symbol, ". No new trades will be opened.");
+        return;
+    }
+
+    // Attempt to open a trade for the symbol
+    if (OpenTradeWithTrigger(symbol, symbolIndex))
+    {
+        Print("Trade opened successfully for symbol: ", symbol);
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Open Trade with Trigger Logic                                    |
+//+------------------------------------------------------------------+
+bool OpenTradeWithTrigger(string symbol, int symbolIndex)
+{
+    double momentumValue, lastCandleOpen, lastCandleClose;
+
+    // Check momentum conditions
+    if (!CheckMomentumTrigger(symbol, momentumValue, lastCandleOpen, lastCandleClose))
+    {
+        Print("Momentum conditions not met for ", symbol, ". No trades opened.");
+        return false;
+    }
+
+    // Determine trade direction
+    if (momentumValue > TriggerFactor && lastCandleClose > lastCandleOpen)
+    {
+        double buyPrice = MarketInfo(symbol, MODE_ASK);
+        if (OpenTrade(symbol, OP_BUY, buyPrice, LotSize))
+        {
+            lastTradeTimes[symbolIndex * 2] = TimeCurrent(); // Update last trade time for BUY
+            return true;
+        }
+    }
+    else if (momentumValue < -TriggerFactor && lastCandleOpen > lastCandleClose)
+    {
+        double sellPrice = MarketInfo(symbol, MODE_BID);
+        if (OpenTrade(symbol, OP_SELL, sellPrice, LotSize))
+        {
+            lastTradeTimes[symbolIndex * 2 + 1] = TimeCurrent(); // Update last trade time for SELL
+            return true;
+        }
+    }
+
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Open Trade                                                       |
+//+------------------------------------------------------------------+
+bool OpenTrade(string symbol, int orderType, double price, double lot)
+{
+    int ticket = OrderSend(symbol, orderType, lot, price, 3, 0, 0, "Momentum Trade", 0, 0, clrBlue);
+    if (ticket < 0)
+    {
+        Print("Failed to open trade on ", symbol, ". Error: ", GetLastError());
+        return false;
+    }
+
+    Print("Trade opened on ", symbol, 
+          " | Ticket: ", ticket, 
+          " | Type: ", (orderType == OP_BUY ? "BUY" : "SELL"), 
+          " | Lot: ", lot, 
+          " | Price: ", price);
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Close Trades on Profit                                           |
+//+------------------------------------------------------------------+
+
+void CloseTradesOnProfit()
+{
+    Print("=== Checking Trades for Closure Based on Profit ===");
+
+    // Iterate through all open trades
+    for (int i = OrdersTotal() - 1; i >= 0; i--) // Loop in reverse to avoid indexing issues when closing trades
+    {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+        {
+            double profit = OrderProfit();
+            double lotSize = OrderLots();
+            double closePrice = (OrderType() == OP_BUY) ? Bid : Ask;
+            string symbol = OrderSymbol();
+            int ticket = OrderTicket();
+            string tradeType = (OrderType() == OP_BUY) ? "BUY" : "SELL";
+
+            if (profit > 1)
+            {
+                Print("Trade with profit above $1 detected: Symbol: ", symbol, 
+                      ", Ticket: ", ticket, ", Type: ", tradeType, ", Profit: ", profit);
+
+                // Attempt to close the trade
+                if (OrderClose(ticket, lotSize, closePrice, 3, clrRed))
+                {
+                    Print("Trade closed successfully: Symbol: ", symbol, 
+                          ", Ticket: ", ticket, ", Type: ", tradeType, ", Profit: ", profit);
+                }
+                else
+                {
+                    int errorCode = GetLastError();
+                    Print("Failed to close trade: Symbol: ", symbol, 
+                          ", Ticket: ", ticket, ", Error: ", errorCode);
+
+                    // Specific error handling
+                    if (errorCode == ERR_INVALID_PRICE)
+                        Print("Invalid price for closing trade. Current Price: ", closePrice, ", Symbol: ", symbol);
+                    else if (errorCode == ERR_NO_CONNECTION)
+                        Print("No connection to server. Unable to close trade. Symbol: ", symbol);
+                    else if (errorCode == ERR_SERVER_BUSY)
+                        Print("Server busy, retrying later. Symbol: ", symbol);
+                    else
+                        Print("Unhandled error (", errorCode, ") for trade. Symbol: ", symbol, ", Ticket: ", ticket);
+                }
+            }
+        }
+        else
+        {
+            Print("Failed to select trade at position ", i, ". Error: ", GetLastError());
+        }
+    }
+
+    Print("=== End of Trade Closure Check ===");
+}
+
+
+//+------------------------------------------------------------------+
+//| Count Existing Trades                                            |
+//+------------------------------------------------------------------+
+void CountExistingTrades(string symbol, int &buyCount, int &sellCount)
+{
+    buyCount = 0;
+    sellCount = 0;
+
+    for (int i = 0; i < OrdersTotal(); i++)
+    {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+        {
+            if (OrderSymbol() == symbol)
+            {
+                if (OrderType() == OP_BUY) buyCount++;
+                else if (OrderType() == OP_SELL) sellCount++;
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check Momentum Trigger                                           |
+//+------------------------------------------------------------------+
+bool CheckMomentumTrigger(string symbol, double &momentumValue, double &lastCandleOpen, double &lastCandleClose)
+{
+    momentumValue = iMomentum(symbol, Timeframe, 14, PRICE_CLOSE, 0);
+    lastCandleOpen = iOpen(symbol, Timeframe, 1);
+    lastCandleClose = iClose(symbol, Timeframe, 1);
+
+    //Print("Momentum for ", symbol, " | Value: ", momentumValue,
+          //" | Last Candle Open: ", lastCandleOpen, " | Close: ", lastCandleClose);
+
+    return true;
+}
+
+//+------------------------------------------------------------------+
+//| Log All Trades Status                                            |
+//+------------------------------------------------------------------+
+void LogAllTradesStatus()
+{
+    //Print("=== Logging All Open Trades Profit & Loss Status ===");
+    if (OrdersTotal() == 0)
+    {
+        Print("No open trades found.");
+        return;
+    }
+
+    for (int i = 0; i < OrdersTotal(); i++)
+    {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+        {
+            string symbol = OrderSymbol();
+            int ticket = OrderTicket();
+            string tradeType = (OrderType() == OP_BUY) ? "BUY" : "SELL";
+            double openPrice = OrderOpenPrice();
+            double currentPrice = (OrderType() == OP_BUY) ? Bid : Ask;
+            double profit = OrderProfit();
+            double lotSize = OrderLots();
+            datetime openTime = OrderOpenTime();
+
+            Print("Trade Details: Symbol: ", symbol, 
+                  ", Ticket: ", ticket, 
+                  ", Type: ", tradeType, 
+                  ", Open Price: ", openPrice, 
+                  ", Current Price: ", currentPrice, 
+                  ", Profit: ", profit, 
+                  ", Lot Size: ", lotSize, 
+                  ", Open Time: ", TimeToString(openTime, TIME_DATE | TIME_MINUTES));
+        }
+    }
+    Print("=== End of Open Trades Log ===");
+}
+
+

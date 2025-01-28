@@ -1,0 +1,14 @@
+//+------------------------------------------------------------------+
+//| Check Momentum Trigger                                           |
+//+------------------------------------------------------------------+
+bool CheckMomentumTrigger(string symbol, double &momentumValue, double &lastCandleOpen, double &lastCandleClose)
+{
+    momentumValue = iMomentum(symbol, Timeframe, 14, PRICE_CLOSE, 0);
+    lastCandleOpen = iOpen(symbol, Timeframe, 1);
+    lastCandleClose = iClose(symbol, Timeframe, 1);
+
+    //Print("Momentum for ", symbol, " | Value: ", momentumValue,
+          //" | Last Candle Open: ", lastCandleOpen, " | Close: ", lastCandleClose);
+
+    return true;
+}
