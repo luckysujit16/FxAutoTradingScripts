@@ -193,7 +193,6 @@ bool OpenTradeWithTrigger(string symbol, int symbolIndex)
     return false;
 }
 
-
 //+------------------------------------------------------------------+
 //| Open Trade                                                       |
 //+------------------------------------------------------------------+
@@ -220,7 +219,7 @@ bool OpenTrade(string symbol, int orderType, double price, double lot)
 
 void CloseTradesOnProfit()
 {
-    Print("=== Checking Trades for Closure Based on Profit ===");
+    //Print("=== Checking Trades for Closure Based on Profit ===");
 
     // Iterate through all open trades
     for (int i = OrdersTotal() - 1; i >= 0; i--) // Loop in reverse to avoid indexing issues when closing trades
@@ -269,7 +268,7 @@ void CloseTradesOnProfit()
         }
     }
 
-    Print("=== End of Trade Closure Check ===");
+    //Print("=== End of Trade Closure Check ===");
 }
 
 
