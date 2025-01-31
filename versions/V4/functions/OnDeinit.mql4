@@ -1,0 +1,8 @@
+//+------------------------------------------------------------------+
+//| Expert De-Initialization                                         |
+//+------------------------------------------------------------------+
+
+void OnDeinit(const int reason)
+{
+    Print("== EA De-initialized. Reason: ", reason);
+}

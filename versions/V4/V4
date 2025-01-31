@@ -29,6 +29,7 @@ datetime lastPrimaryTradeTimes[];         // Last primary trade execution time
 datetime lastCounterTradeTimes[];         // Last counter trade execution time
 datetime lastTradeTimes[];
 string Symbols[];                         // Symbols to trade on
+#define MAX_TRADES 13                     // Define the maximum number of trades (hardcoded)
 
 //+------------------------------------------------------------------+
 //| Expert Initialization                                            |
@@ -69,6 +70,20 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
+    
+     // Close trades with profit above $1
+    CloseTradesOnProfit();
+
+    // Log all active trades
+    LogAllTradesStatus();
+      
+    // Check if the total number of trades has reached MAX_TRADES
+    if (OrdersTotal() >= MAX_TRADES)
+    {
+        Print("Maximum trade limit reached (", MAX_TRADES, "). No further trades will be opened.");
+        return;
+    }
+      
     for (int i = 0; i < ArraySize(Symbols); i++)
     {
         string currentSymbol = Symbols[i];
@@ -98,11 +113,7 @@ void OnTick()
         }
     }
 
-    // Close trades with profit above $1
-    CloseTradesOnProfit();
-
-    // Log all active trades
-    LogAllTradesStatus();
+   
 }
 
 
@@ -119,6 +130,13 @@ bool OpenTradeWithTrigger(string symbol, int symbolIndex)
     if (!CheckMomentumTrigger(symbol, momentumValue, lastCandleOpen, lastCandleClose))
     {
         Print("Momentum conditions not met for ", symbol, ". No trades opened.");
+        return false;
+    }
+    
+    // Ensure we do not exceed MAX_TRADES
+    if (OrdersTotal() >= MAX_TRADES)
+    {
+        Print("Maximum trade limit reached (", MAX_TRADES, "). Primary trade not opened for ", symbol);
         return false;
     }
 
@@ -181,6 +199,20 @@ bool OpenCounterTrade(string symbol, int symbolIndex)
         Print("No primary trade found for ", symbol, ". Counter trade not opened.");
         return false;
     }
+    
+    // Ensure we do not exceed MAX_TRADES
+    if (OrdersTotal() >= MAX_TRADES)
+    {
+        Print("Maximum trade limit reached (", MAX_TRADES, "). Counter trade not opened for ", symbol);
+        return false;
+    }
+    
+    // Check for an existing counter trade
+    if (HasOpenTrade(symbol, OP_BUY) && HasOpenTrade(symbol, OP_SELL))
+    {
+        Print("Counter trade already exists for ", symbol, ". No further counter trades will be opened.");
+        return false;
+    }
 
     // Select the existing open trade to determine counter trade
     for (int i = 0; i < OrdersTotal(); i++)
@@ -207,7 +239,7 @@ bool OpenCounterTrade(string symbol, int symbolIndex)
             }
 
             // Prevent multiple counter-trades using the cooling period
-            if (TimeCurrent() - lastTradeTimes[symbolIndex] < 10) // Cooling period (10 seconds)
+            if (TimeCurrent() - lastTradeTimes[symbolIndex] < CoolingPeriod) // Cooling period (10 seconds)
             {
                 Print("Cooling period active for counter trade on ", symbol);
                 return false;
@@ -229,9 +261,6 @@ bool OpenCounterTrade(string symbol, int symbolIndex)
     Print("No valid open trade found for counter-trade logic on ", symbol);
     return false;
 }
-
-
-
 
 //+------------------------------------------------------------------+
 //| Has Counter Trade Logic                                         |

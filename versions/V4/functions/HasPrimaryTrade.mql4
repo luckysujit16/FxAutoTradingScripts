@@ -1,0 +1,11 @@
+//+------------------------------------------------------------------+
+//| Has Primary Trade Logic                                         |
+//+------------------------------------------------------------------+
+
+bool HasPrimaryTrade(string symbol)
+{
+    bool hasBuy = HasOpenTrade(symbol, OP_BUY);
+    bool hasSell = HasOpenTrade(symbol, OP_SELL);
+
+    return (hasBuy || hasSell);
+}

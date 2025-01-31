@@ -6,7 +6,6 @@ void CloseTradesOnProfit()
 {
     Print("=== Checking Trades for Closure Based on Profit ===");
 
-    // Iterate through all open trades
     for (int i = 0; i < OrdersTotal(); i++)
     {
         if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
@@ -18,44 +17,54 @@ void CloseTradesOnProfit()
             int ticket = OrderTicket();
             string tradeType = (OrderType() == OP_BUY) ? "BUY" : "SELL";
 
-            // Check if the trade profit exceeds $1
-            if (profit > 1)
+            Print("Checking trade: Symbol: ", symbol, ", Ticket: ", ticket, 
+                  ", Type: ", tradeType, ", Profit: ", profit, 
+                  ", Lot Size: ", lotSize, ", Close Price: ", closePrice);
+
+            // Check if the trade profit exceeds the threshold
+            if (profit > 1.0)
             {
                 Print("Trade with profit above $1 detected: Symbol: ", symbol, 
-                      ", Ticket: ", ticket, ", Type: ", tradeType, 
-                      ", Profit: ", profit, ", Lot Size: ", lotSize);
+                      ", Ticket: ", ticket, ", Profit: ", profit);
+
+                // Normalize close price to required precision
+                closePrice = NormalizeDouble(closePrice, MarketInfo(symbol, MODE_DIGITS));
 
                 // Attempt to close the trade
                 if (!OrderClose(ticket, lotSize, closePrice, 3, clrRed))
                 {
                     int errorCode = GetLastError();
                     Print("Failed to close trade: Symbol: ", symbol, 
-                          ", Ticket: ", ticket, ", Type: ", tradeType, 
-                          ", Profit: ", profit, ", Error: ", errorCode);
+                          ", Ticket: ", ticket, ", Profit: ", profit, ", Error: ", errorCode);
 
                     // Handle specific errors
-                    if (errorCode == ERR_INVALID_PRICE)
-                        Print("Invalid price for closing trade: Symbol: ", symbol, 
-                              ", Ticket: ", ticket, ", Close Price: ", closePrice);
-                    else if (errorCode == ERR_NO_CONNECTION)
-                        Print("No connection to server. Unable to close trade: Symbol: ", symbol);
-                    else if (errorCode == ERR_SERVER_BUSY)
-                        Print("Server busy. Retrying later: Symbol: ", symbol);
-                    else
-                        Print("Unhandled error (", errorCode, ") while closing trade: Symbol: ", symbol);
+                    switch (errorCode)
+                    {
+                        case ERR_INVALID_PRICE:
+                            Print("Invalid price for closing trade: Symbol: ", symbol, 
+                                  ", Ticket: ", ticket, ", Close Price: ", closePrice);
+                            break;
+                        case ERR_NO_CONNECTION:
+                            Print("No connection to server. Unable to close trade: Symbol: ", symbol);
+                            break;
+                        case ERR_SERVER_BUSY:
+                            Print("Server busy. Retrying later: Symbol: ", symbol);
+                            break;
+                        default:
+                            Print("Unhandled error (", errorCode, ") while closing trade: Symbol: ", symbol);
+                            break;
+                    }
                 }
                 else
                 {
                     Print("Trade closed successfully: Symbol: ", symbol, 
-                          ", Ticket: ", ticket, ", Type: ", tradeType, 
-                          ", Profit: ", profit);
+                          ", Ticket: ", ticket, ", Profit: ", profit);
                 }
             }
             else
             {
                 Print("Trade profit below threshold: Symbol: ", symbol, 
-                      ", Ticket: ", ticket, ", Type: ", tradeType, 
-                      ", Profit: ", profit);
+                      ", Ticket: ", ticket, ", Type: ", tradeType, ", Profit: ", profit);
             }
         }
     }

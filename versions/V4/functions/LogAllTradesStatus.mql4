@@ -1,0 +1,21 @@
+//+------------------------------------------------------------------+
+//| Log All Trades Status                                            |
+//+------------------------------------------------------------------+
+
+void LogAllTradesStatus()
+{
+    if (OrdersTotal() == 0)
+    {
+        Print("No open trades found.");
+        return;
+    }
+
+    for (int i = 0; i < OrdersTotal(); i++)
+    {
+        if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+        {
+            Print("Trade | Symbol: ", OrderSymbol(), " | Type: ", (OrderType() == OP_BUY ? "BUY" : "SELL"),
+                  " | Profit: ", OrderProfit());
+        }
+    }
+}

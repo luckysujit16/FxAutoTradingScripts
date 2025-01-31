@@ -4,14 +4,28 @@
 
 bool OpenCounterTrade(string symbol, int symbolIndex)
 {
-    // Check if the symbol has an open trade
-    if (!HasOpenTrade(symbol))
+    // Check if there is already a primary trade
+    if (!HasPrimaryTrade(symbol))
     {
         Print("No primary trade found for ", symbol, ". Counter trade not opened.");
         return false;
     }
+    
+    // Ensure we do not exceed MAX_TRADES
+    if (OrdersTotal() >= MAX_TRADES)
+    {
+        Print("Maximum trade limit reached (", MAX_TRADES, "). Counter trade not opened for ", symbol);
+        return false;
+    }
+    
+    // Check for an existing counter trade
+    if (HasOpenTrade(symbol, OP_BUY) && HasOpenTrade(symbol, OP_SELL))
+    {
+        Print("Counter trade already exists for ", symbol, ". No further counter trades will be opened.");
+        return false;
+    }
 
-    // Select the existing open trade
+    // Select the existing open trade to determine counter trade
     for (int i = 0; i < OrdersTotal(); i++)
     {
         if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES) && OrderSymbol() == symbol)
@@ -23,19 +37,33 @@ bool OpenCounterTrade(string symbol, int symbolIndex)
                                   ? openPrice - CounterPoints * Point
                                   : openPrice + CounterPoints * Point;
 
-            // Prevent multiple counter-trades
-            if (TimeCurrent() - lastTradeTimes[symbolIndex] < 10) // Cooling period (10 seconds)
+            // Get the current market price
+            double livePrice = (currentOrderType == OP_BUY) ? Bid : Ask;
+
+            // Ensure the live price satisfies the 50-point difference
+            if ((currentOrderType == OP_BUY && (livePrice > counterPrice)) || 
+                (currentOrderType == OP_SELL && (livePrice < counterPrice)))
             {
-                Print("Cooling period active for counter-trade on ", symbol);
+                Print("Live price does not meet the required ", CounterPoints,
+                      " point difference for counter trade on ", symbol);
                 return false;
             }
 
-            if (OpenTrade(symbol, counterType, counterPrice, LotSize))
+            // Prevent multiple counter-trades using the cooling period
+            if (TimeCurrent() - lastTradeTimes[symbolIndex] < CoolingPeriod) // Cooling period (10 seconds)
             {
-                lastTradeTimes[symbolIndex] = TimeCurrent(); // Update last trade time
+                Print("Cooling period active for counter trade on ", symbol);
+                return false;
+            }
+
+            // Open the counter trade
+            if (OpenTrade(symbol, counterType, livePrice, LotSize))
+            {
+                lastTradeTimes[symbolIndex] = TimeCurrent(); // Update the last trade time
                 Print("Counter trade opened for ", symbol,
                       ". Original Price: ", openPrice,
-                      ", Counter Price: ", counterPrice);
+                      ", Counter Price: ", counterPrice,
+                      ", Live Price: ", livePrice);
                 return true;
             }
         }
@@ -44,3 +72,4 @@ bool OpenCounterTrade(string symbol, int symbolIndex)
     Print("No valid open trade found for counter-trade logic on ", symbol);
     return false;
 }
+

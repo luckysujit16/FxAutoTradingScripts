@@ -4,13 +4,26 @@
 
 void OnTick()
 {
-    // Loop through all symbols sequentially
+    
+     // Close trades with profit above $1
+    CloseTradesOnProfit();
+
+    // Log all active trades
+    LogAllTradesStatus();
+      
+    // Check if the total number of trades has reached MAX_TRADES
+    if (OrdersTotal() >= MAX_TRADES)
+    {
+        Print("Maximum trade limit reached (", MAX_TRADES, "). No further trades will be opened.");
+        return;
+    }
+      
     for (int i = 0; i < ArraySize(Symbols); i++)
     {
         string currentSymbol = Symbols[i];
 
-        // Check and handle primary trades
-        if (!HasOpenTrade(currentSymbol))
+        // Ensure only one primary trade per symbol
+        if (!HasPrimaryTrade(currentSymbol))
         {
             if (OpenTradeWithTrigger(currentSymbol, i)) // Pass index for cooldown tracking
             {
@@ -19,17 +32,20 @@ void OnTick()
         }
         else
         {
-            // Handle counter-trades if a primary trade exists
-            if (OpenCounterTrade(currentSymbol, i))
+            // Ensure only one counter-trade per symbol
+            if (!HasOpenTrade(currentSymbol, OP_BUY) || !HasOpenTrade(currentSymbol, OP_SELL))
             {
-                Print("Counter trade opened for symbol: ", currentSymbol);
+                if (OpenCounterTrade(currentSymbol, i))
+                {
+                    Print("Counter trade opened for symbol: ", currentSymbol);
+                }
+            }
+            else
+            {
+                Print("Both trades already exist for ", currentSymbol, ". No counter trade needed.");
             }
         }
     }
 
-    // Close trades with profit above $1
-    CloseTradesOnProfit();
-
-    // Log all active trades
-    LogAllTradesStatus();
+   
 }
