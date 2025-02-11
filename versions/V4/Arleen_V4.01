@@ -1,0 +1,387 @@
+// ###################################################################### //
+//+------------------------------------------------------------------+
+//|                                         DemoBotMultiCurrency.mq5 |
+//|                                                   Sujit S Jadhav |
+//|                                       https://www.sujitjadhav.me |
+//+------------------------------------------------------------------+
+
+#include <Trade\Trade.mqh> // Include MT5 trade library
+CTrade trade;             // Create a trade object for executing trades
+
+//+------------------------------------------------------------------+
+//| External Inputs                                                  |
+//+------------------------------------------------------------------+
+input double LotSize = 0.01;             // Lot size
+input double TriggerFactor = 100;        // Momentum trigger level
+input ENUM_TIMEFRAMES Timeframe = PERIOD_M15; // Timeframe for momentum calculation
+input double CounterPoints = 50;         // Fixed points difference for counter trade
+input int CoolingPeriod = 10;            // Cooling period in seconds for trades
+input string Symbol1 = "BTCUSD";         // First symbol
+input string Symbol2 = "ETHUSD";         // Second symbol
+
+//+------------------------------------------------------------------+
+//| Global Variables                                                 |
+//+------------------------------------------------------------------+
+datetime lastTradeTimes[];
+string Symbols[];
+#define MAX_TRADES 6                    // Define the maximum number of trades
+
+//+------------------------------------------------------------------+
+//| Expert Initialization                                            |
+//+------------------------------------------------------------------+
+
+int OnInit()
+{
+    // Dynamically populate the Symbols array
+    ArrayResize(Symbols, 2);
+    Symbols[0] = Symbol1;
+    Symbols[1] = Symbol2;
+
+    // Initialize last trade times array for each symbol
+    ArrayResize(lastTradeTimes, ArraySize(Symbols));
+    for (int i = 0; i < ArraySize(lastTradeTimes); i++) {
+        lastTradeTimes[i] = 0;
+    }
+    
+    // Log all active trades
+    LogAllTradesStatus();
+
+    Print("Symbols initialized: ", Symbols[0], ", ", Symbols[1]);
+    return INIT_SUCCEEDED;
+}
+
+//+------------------------------------------------------------------+
+//| Expert De-Initialization                                         |
+//+------------------------------------------------------------------+
+
+void OnDeinit(const int reason)
+{
+    Print("== EA De-initialized. Reason: ", reason);
+}
+
+//+------------------------------------------------------------------+
+//| Main Function (OnTick)                                           |
+//+------------------------------------------------------------------+
+
+void OnTick()
+{
+    // Close trades with profit above $1
+    CloseTradesOnProfit();
+
+    
+      
+    // Check if the total number of trades has reached MAX_TRADES
+    int totalPositions = PositionsTotal();
+    if (totalPositions >= MAX_TRADES)
+    {
+        Print("Maximum trade limit reached (", MAX_TRADES, "). No further trades will be opened.");
+        return;
+    }
+      
+    for (int i = 0; i < ArraySize(Symbols); i++)
+    {
+        string currentSymbol = Symbols[i];
+
+        // Ensure only one primary trade per symbol
+        if (!HasPrimaryTrade(currentSymbol))
+        {
+            if (OpenTradeWithTrigger(currentSymbol, i))
+            {
+                Print("Primary trade opened for symbol: ", currentSymbol);
+            }
+        }
+        else
+        {
+            // Ensure only one counter-trade per symbol
+            if (!HasOpenTrade(currentSymbol, ORDER_TYPE_BUY) || !HasOpenTrade(currentSymbol, ORDER_TYPE_SELL))
+            {
+                if (OpenCounterTrade(currentSymbol, i))
+                {
+                    Print("Counter trade opened for symbol: ", currentSymbol);
+                }
+            }
+            else
+            {
+                Print("Both trades already exist for ", currentSymbol, ". No counter trade needed.");
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Open Trade with Trigger Logic                                    |
+//+------------------------------------------------------------------+
+
+bool OpenTradeWithTrigger(string symbol, int symbolIndex)
+{
+    double momentumValue, lastCandleOpen, lastCandleClose;
+
+    // Check momentum conditions
+    if (!CheckMomentumTrigger(symbol, momentumValue, lastCandleOpen, lastCandleClose))
+    {
+        Print("Momentum conditions not met for ", symbol, ". No trades opened.");
+        return false;
+    }
+
+    ENUM_ORDER_TYPE orderType; // ✅ Define orderType as ENUM_ORDER_TYPE
+    double price = 0.0;
+
+    if (momentumValue > TriggerFactor && lastCandleClose > lastCandleOpen)
+    {
+        orderType = ORDER_TYPE_BUY;
+        price = SymbolInfoDouble(symbol, SYMBOL_ASK);
+    }
+    else if (momentumValue < TriggerFactor && lastCandleOpen > lastCandleClose)
+    {
+        orderType = ORDER_TYPE_SELL;
+        price = SymbolInfoDouble(symbol, SYMBOL_BID);
+    }
+    else
+    {
+        Print("No valid momentum signal for trade.");
+        return false;
+    }
+
+    // Open the primary trade
+    if (trade.PositionOpen(symbol, orderType, LotSize, price, 0, 0, "Momentum Trade"))
+    {
+        lastTradeTimes[symbolIndex] = TimeCurrent(); // Update last trade time
+        Print((orderType == ORDER_TYPE_BUY ? "BUY" : "SELL"), " trade opened as PRIMARY for ", symbol);
+        return true;
+    }
+
+    return false;
+}
+
+
+//+------------------------------------------------------------------+
+//| Open Counter Trade Logic                                         |
+//+------------------------------------------------------------------+
+
+bool OpenCounterTrade(string symbol, int symbolIndex)
+{
+    // Check if there is already a primary trade
+    if (!HasPrimaryTrade(symbol))
+    {
+        Print("No primary trade found for ", symbol, ". Counter trade not opened.");
+        return false;
+    }
+    
+    // Ensure we do not exceed MAX_TRADES
+    if (PositionsTotal() >= MAX_TRADES)
+    {
+        Print("Maximum trade limit reached (", MAX_TRADES, "). Counter trade not opened for ", symbol);
+        return false;
+    }
+    
+    // Check for an existing counter trade
+    if (HasOpenTrade(symbol, ORDER_TYPE_BUY) && HasOpenTrade(symbol, ORDER_TYPE_SELL))
+    {
+        Print("Counter trade already exists for ", symbol, ". No further counter trades will be opened.");
+        return false;
+    }
+
+    // Select the existing open trade to determine counter trade
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if (PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == symbol)
+        {
+            double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+            ENUM_ORDER_TYPE currentOrderType = (ENUM_ORDER_TYPE)PositionGetInteger(POSITION_TYPE);
+            ENUM_ORDER_TYPE counterType = (currentOrderType == ORDER_TYPE_BUY) ? ORDER_TYPE_SELL : ORDER_TYPE_BUY;
+            double counterPrice;
+               if (currentOrderType == ORDER_TYPE_BUY)
+               {
+                   counterPrice = openPrice - CounterPoints * SymbolInfoDouble(symbol, SYMBOL_POINT);
+               }
+               else
+               {
+                   counterPrice = openPrice + CounterPoints * SymbolInfoDouble(symbol, SYMBOL_POINT);
+               }
+
+
+            // Get the current market price
+            double livePrice = (currentOrderType == ORDER_TYPE_BUY) ? SymbolInfoDouble(symbol, SYMBOL_BID)
+                                                                    : SymbolInfoDouble(symbol, SYMBOL_ASK);
+
+            // Ensure the live price satisfies the 50-point difference
+            if ((currentOrderType == ORDER_TYPE_BUY && (livePrice > counterPrice)) || 
+                (currentOrderType == ORDER_TYPE_SELL && (livePrice < counterPrice)))
+            {
+                Print("Live price does not meet the required ", CounterPoints,
+                      " point difference for counter trade on ", symbol);
+                return false;
+            }
+
+            // Prevent multiple counter-trades using the cooling period
+            if (TimeCurrent() - lastTradeTimes[symbolIndex] < CoolingPeriod) // Cooling period (10 seconds)
+            {
+                Print("Cooling period active for counter trade on ", symbol);
+                return false;
+            }
+
+            // Open the counter trade
+            if (trade.PositionOpen(symbol, counterType, LotSize, livePrice, 0, 0, "Counter Trade"))
+            {
+                lastTradeTimes[symbolIndex] = TimeCurrent(); // Update the last trade time
+                Print("Counter trade opened for ", symbol,
+                      ". Original Price: ", openPrice,
+                      ", Counter Price: ", counterPrice,
+                      ", Live Price: ", livePrice);
+                return true;
+            }
+        }
+    }
+
+    Print("No valid open trade found for counter-trade logic on ", symbol);
+    return false;
+}
+
+//+------------------------------------------------------------------+
+//| Close Trades on Profit                                           |
+//+------------------------------------------------------------------+
+
+void CloseTradesOnProfit()
+{
+    int totalPositions = PositionsTotal(); // Store total position count once
+
+    for (int i = 0; i < totalPositions; i++)
+    {
+        ulong ticket = PositionGetTicket(i); // ✅ Get ticket number
+        if (PositionSelectByTicket(ticket)) // ✅ Select position using ticket number
+        {
+            string symbol = PositionGetString(POSITION_SYMBOL); 
+            double profit = PositionGetDouble(POSITION_PROFIT);
+            ulong ticket = PositionGetInteger(POSITION_TICKET);
+
+            if (profit > 1.0)
+            {
+                Print("Closing trade on ", symbol, 
+                      " | Ticket: ", IntegerToString(ticket), 
+                      " | Profit: ", DoubleToString(profit, 2)); // ✅ Convert values to string
+
+                trade.PositionClose(ticket);
+            }
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check Momentum Trigger                                           |
+//+------------------------------------------------------------------+
+
+bool CheckMomentumTrigger(string symbol, double &momentumValue, double &lastCandleOpen, double &lastCandleClose)
+{
+    int momentumPeriod = 14;
+    
+    // Create the iMomentum indicator handle
+    int momentumHandle = iMomentum(symbol, Timeframe, momentumPeriod, PRICE_CLOSE);
+    
+    // Check if the handle is valid
+    if (momentumHandle == INVALID_HANDLE)
+    {
+        Print("Error: Could not create iMomentum handle for ", symbol);
+        return false;
+    }
+
+    // Define an array to store momentum values
+    double momentumArray[2]; // Store the last two momentum values
+
+    // Copy the last two momentum values from the indicator buffer
+    if (CopyBuffer(momentumHandle, 0, 1, 2, momentumArray) <= 0)
+    {
+        Print("Error: Could not copy iMomentum data for ", symbol);
+        IndicatorRelease(momentumHandle); // Release indicator handle
+        return false;
+    }
+
+    // Store the momentum value
+    momentumValue = momentumArray[0];
+
+    // Get last candle open and close prices
+    lastCandleOpen = iOpen(symbol, Timeframe, 1);
+    lastCandleClose = iClose(symbol, Timeframe, 1);
+
+    // Release the indicator handle to free resources
+    IndicatorRelease(momentumHandle);
+
+    return true;
+}
+
+
+//+------------------------------------------------------------------+
+//| Log All Trades Status                                            |
+//+------------------------------------------------------------------+
+
+void LogAllTradesStatus()
+{
+    int totalPositions = PositionsTotal(); // Store position count
+
+    if (totalPositions == 0)
+    {
+        Print("No open trades found.");
+        return;
+    }
+
+    for (int i = 0; i < totalPositions; i++)
+    {
+        ulong ticket = PositionGetTicket(i); // ✅ Get ticket number
+        if (PositionSelectByTicket(ticket)) // ✅ Select position using ticket number
+        {
+            string symbol = PositionGetString(POSITION_SYMBOL);
+            string type = (PositionGetInteger(POSITION_TYPE) == ORDER_TYPE_BUY) ? "BUY" : "SELL";
+            double profit = PositionGetDouble(POSITION_PROFIT);
+
+            Print("Trade | Symbol: " , symbol , 
+                  " | Type: " , type , 
+                  " | Profit: " , DoubleToString(profit, 2)); // ✅ Corrected concatenation
+        }
+    }
+}
+
+//+------------------------------------------------------------------+
+//| Check if Symbol has Primary Trade                               |
+//+------------------------------------------------------------------+
+
+bool HasPrimaryTrade(string symbol)
+{
+    int totalPositions = PositionsTotal(); // Store once for optimization
+    for (int i = 0; i < totalPositions; i++)  
+    {
+        ulong ticket = PositionGetTicket(i); // ✅ Get ticket number
+        if (PositionSelectByTicket(ticket)) // ✅ Select position using ticket number
+        {
+            string openSymbol = PositionGetString(POSITION_SYMBOL); // Get the symbol of the open trade
+            
+            Print("Checking Position: ", i, " | Total Positions: ", totalPositions);
+
+            if (openSymbol == symbol)
+            {
+                return true; // Trade exists
+            }
+        }
+    }
+    return false; // No trade found
+}
+
+
+//+------------------------------------------------------------------+
+//| Check if Symbol has Has Open Trade                               |
+//+------------------------------------------------------------------+
+
+bool HasOpenTrade(string symbol, ENUM_ORDER_TYPE orderType = (ENUM_ORDER_TYPE)-1)
+{
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if (PositionSelectByTicket(ticket) && PositionGetString(POSITION_SYMBOL) == symbol)
+        {
+            if (orderType == (ENUM_ORDER_TYPE)-1 || PositionGetInteger(POSITION_TYPE) == orderType)
+            {
+                return true; // Trade exists
+            }
+        }
+    }
+    return false; // No trade found
+}

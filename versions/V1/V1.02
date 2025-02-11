@@ -1,0 +1,187 @@
+// MQL4 Version of Momentum Trade EA
+#property copyright "Copyright 2025, Sujit Jadhav."
+#property link      "https://www.sujitjadhav.me"
+#property version   "1.02"
+
+// Define a unique magic number for this EA
+#define MAGICNUMBER 123456
+
+// Inputs
+input ENUM_TIMEFRAMES Timeframe = PERIOD_M15;  // Timeframe for momentum
+input double TriggerFactor = 100;              // Momentum trigger level
+input double LotSize = 0.1;                    // Lot size
+input double TakeProfit = 50;                  // TP in points (Not pips)
+input double TrailingStep = 20;                // Trailing step in points
+input double GlobalProfitTarget = 100;         // Global profit in currency units (USD)
+input int StartHour = 9;                       // Start trading at this hour (24-hour format)
+input int EndHour = 17;                        // Stop trading at this hour (24-hour format)
+
+// Declare variables
+int handleMomentum;  // Handle for the Momentum indicator
+int barsTotal;       // Store the number of bars for comparison
+
+double virtualTP = 0;  // Virtual Take-Profit
+double lastSL = 0;     // Last Stop-Loss
+
+int OnInit()
+{
+   // Initialize momentum indicator
+   handleMomentum = iMomentum(NULL, Timeframe, 14, PRICE_CLOSE, 1);
+   barsTotal = iBars(NULL, Timeframe);
+   Print("== EA Initialized: Momentum Indicator Initialized with Timeframe ", Timeframe);
+   return(INIT_SUCCEEDED);
+}
+
+void OnDeinit(const int reason)
+{
+   Print("== EA De-initialized. Reason: ", reason);
+}
+
+void OnTick()
+{
+   Print("========================= OnTick Triggered =========================");
+
+   // Check if the current time is within allowed trading hours
+   int currentHour = Hour();
+   if (currentHour < StartHour || currentHour >= EndHour)
+   {
+      Print("Trading is restricted during this time. Current Hour: ", currentHour);
+      return;
+   }
+
+   // Check global profit target
+   if (CheckGlobalProfit())
+   {
+      Print("Global Profit Target Reached! Closing all positions...");
+      CloseAllPositions();
+      return;
+   }
+
+   int totalOrders = OrdersTotal();
+   Print("Total Open Orders: ", totalOrders);
+
+   if (totalOrders > 0)
+   {
+      // Modify open orders for trailing SL and TP
+      Print("Managing Open Orders...");
+      ManageOpenOrders();
+      return;
+   }
+
+   int bars = iBars(NULL, Timeframe);
+   if (barsTotal != bars)
+   {
+      double momentum = iMomentum(NULL, Timeframe, 14, PRICE_CLOSE, 1);
+      double open = iOpen(NULL, Timeframe, 1);
+      double close = iClose(NULL, Timeframe, 1);
+
+      Print("Last Candle: Open = ", open, ", Close = ", close, ", Momentum = ", momentum);
+
+      if (open > close)  // Last candle was red (potential sell signal)
+      {
+         if (momentum > TriggerFactor)
+         {
+            Print("Sell Signal Triggered. Momentum (", momentum, ") > TriggerFactor (", TriggerFactor, ")");
+            OpenTrade(OP_SELL);
+         }
+      }
+      else if (close > open)  // Last candle was green (potential buy signal)
+      {
+         if (momentum > TriggerFactor)
+         {
+            Print("Buy Signal Triggered. Momentum (", momentum, ") > TriggerFactor (", TriggerFactor, ")");
+            OpenTrade(OP_BUY);
+         }
+      }
+   }
+}
+
+// Function to open buy/sell trades
+void OpenTrade(int orderType)
+{
+   double entryPrice = (orderType == OP_BUY) ? Ask : Bid;
+   double stopLevel = MarketInfo(Symbol(), MODE_STOPLEVEL) * Point; // Broker minimum stop level
+   double tpDistance = TakeProfit * Point;  // Convert points to price distance
+
+   if (tpDistance < stopLevel)
+   {
+      Print("TP too close to market price. Adjusting...");
+      tpDistance = stopLevel + (10 * Point);
+   }
+
+   double tp = (orderType == OP_BUY) ? entryPrice + tpDistance : entryPrice - tpDistance;
+   virtualTP = tp;  // Store virtual TP
+
+   int ticket = OrderSend(Symbol(), orderType, LotSize, entryPrice, 3, 0, tp, "Momentum Trade", MAGICNUMBER, 0, clrGreen);
+
+   if (ticket > 0)
+      Print((orderType == OP_BUY ? "Buy" : "Sell"), " Order Placed Successfully at: ", entryPrice, " with TP: ", tp);
+   else
+      Print((orderType == OP_BUY ? "Buy" : "Sell"), " Order Failed. Error: ", GetLastError());
+}
+
+// Function to manage trailing TP and virtual SL
+void ManageOpenOrders()
+{
+   for (int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES) && OrderSymbol() == Symbol())
+      {
+         double currentPrice = (OrderType() == OP_BUY) ? Bid : Ask;
+         Print("Current Price: ", currentPrice, ", Virtual TP: ", virtualTP);
+
+         if ((OrderType() == OP_BUY && currentPrice >= virtualTP) ||
+             (OrderType() == OP_SELL && currentPrice <= virtualTP))
+         {
+            double newSL = virtualTP;
+            lastSL = newSL;  // For debugging
+
+            if (OrderType() == OP_BUY)
+               virtualTP += TrailingStep * Point;
+            else
+               virtualTP -= TrailingStep * Point;
+
+            bool result = OrderModify(OrderTicket(), OrderOpenPrice(), NormalizeDouble(newSL, Digits), OrderTakeProfit(), 0, clrBlue);
+
+            if (result)
+               Print("Stop-loss updated to: ", newSL, " and new virtual TP set to: ", virtualTP);
+            else
+               Print("Failed to update stop-loss. Error: ", GetLastError());
+         }
+      }
+   }
+}
+
+// Function to check if global profit target is reached
+bool CheckGlobalProfit()
+{
+   double totalProfit = 0.0;
+
+   for (int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES) && OrderSymbol() == Symbol())
+      {
+         totalProfit += OrderProfit();
+      }
+   }
+
+   Print("Current Total Profit: ", totalProfit, ", Global Profit Target: ", GlobalProfitTarget);
+
+   return totalProfit >= GlobalProfitTarget;
+}
+
+// Function to close all open orders
+void CloseAllPositions()
+{
+   for (int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES) && OrderSymbol() == Symbol())
+      {
+         int ticket = OrderTicket();
+         if (OrderClose(ticket, OrderLots(), OrderClosePrice(), 3, clrRed))
+            Print("Order ", ticket, " closed.");
+         else
+            Print("Failed to close order ", ticket, ". Error: ", GetLastError());
+      }
+   }
+}
